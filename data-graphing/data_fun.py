@@ -214,7 +214,7 @@ if __name__ == '__main__':
 
     # open the csv to get the data
     # Should make this a user input tho
-    filename = f'../data/{csv_name}'
+    filename = f'/data/{csv_name}'
     parser(filename)
 
     print(f'Number of rows found {row_count}')

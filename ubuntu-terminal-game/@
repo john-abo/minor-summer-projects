@@ -1,0 +1,1242 @@
+#!/usr/bin/python3
+# The thing about ^ this line is that it pretty much only works on linux?
+# I need to check this on windows
+# I hope it does, THAT would be cool
+
+'''
+What is this even going to do?
+
+I'm honestly at a loss for words or inspirations
+
+I don't even want to read
+
+what if I just made a basic RPG?
+
+But using configs?
+
+Hell, lets actually start that project lmao
+
+or maybe even some nuts
+'''
+import platform
+import argparse
+import time
+import os
+import random
+from termcolor import colored
+
+# We're going to use dictionaries to store effects of certain moves and such
+# Looking now, I totally could have made them all functions
+# Imagine a list of functions...
+
+# I could make duration a range too
+# Stat resets <stat being changed> <direction of change> <quantify change> <duration range>
+# Status permanent <stat affected per turn> <direction of change> <quantify change> <duration range>
+
+OS = platform.system()
+
+# OS specific strings
+# Rn its just os.system() to clear
+sys_clear = "clear"
+
+# Elements of the Labels list
+# Either takes effect at the end of turn or when reading
+attributes = {
+    "empty":"stat attack + 0 0 0 none",
+    "paralysis":"stat effective_speed - 1 1 5 none",   # Assigned
+    "burn":"status health - 1 1 5 none",     # Assigned
+    "frozen":"stat effective_speed = 0 1 5 none",      # Assigned
+    "shatter":"stat effective_defense - 5 2 5 none",   # 
+    "acid":"status defense - 1 1 5 none",    #
+    "flex":"stat effective_attack +  1 1 1 none",
+    "heal":"status health + 10 5 10 none",
+    "debug_buff_speed":"stat effective_speed + 10 5 5 debug_buff_max_health",
+    "debug_buff_max_health":"stat effective_max_health + 100 5 5 none",
+}
+# skip has no args
+# attack takes the form <range> <min dmg x> <max dmg x> <potential effects> <% change of effect>*pull these from attributes, and check length if there even is an effect
+actions = {
+    "s":"skip",
+    "n":"skip",
+    "nothing":"skip",
+    "skip":"skip",
+    "club":"attack 1 1 6 shatter 50 stamina 5",
+    "slash":"attack 2 3 6 shatter 10 stamina 10",
+    "thurst":"attack 3 2 4 shatter 5 stamina 10",
+    "bludgeon":"attack 1 2 13 shatter 100 stamina 20",
+    "fireball":"attack 5 2 5 burn 50 mana 10",
+    "bolt":"attack 5 2 5 paralysis 50 mana 10",
+    "icicle":"attack 5 2 5 frozen 50 mana 10",
+    "hands":"heal 1 0 0 heal 100 mana 5",
+    "heals":"heal 5 0 0 heal 50 mana 5",
+    "splash":"attack 5 0 0 acid 100 mana 10",
+    "debug1":"attack 5 0 0 debug_buff_speed 100 mana 0",
+    "debug2":"attack 100 200 200 empty 0 health 0",     # Just fucking nuke them I guess LOL
+}
+
+# Debating if I want to include animation
+# Kind of a low priority right now
+action_anim = {
+    "nothing": "",
+}
+
+# So this table defines enemy AI movement based on their name
+# I could have made sub classes, so that the player has stuff light armour
+# and the enemies have specific AI movements, but until then, I'm going to
+# identify them through their names
+enemies = {
+    # Encoding for each enemy type:
+    #   <Character icon> <direction relative to player> <how close to player they should be> <attack type> 
+    # you know what? I should really add enemy stats to this
+    "hulk":"B closer 1 club",
+    "skeleton": "T closer 2 slash",
+    "mage":"^ closer 5 bolt",
+    "wizard":"* closer 5 fireball",
+    "evoker":"$ closer 5 icicle",
+}
+
+# Mostly for rending, just to know what to draw lmao
+# Makes it modular in the future
+models = {
+    "grass":"###",
+    "rock":"/-\\",
+}
+
+# I think I could add color info on this
+meta_models = {
+
+}
+
+directions = ['up', 'down', 'left', 'right']
+
+#entities = []       # List of all entities in the space
+turns = []          # Generates list of all entities index, and applies turn while iterating through
+
+# Do NOT make these smaller than 4, it WILL fuck with the rendering LOL
+space_width = 5
+space_height = 5
+
+# Render the keys as "name_space", and "name_obs" so we can append "name" + space/obs/enemies
+# Or should I just make it into a class that tracks other classes?
+# Fuck it, major refactor time babyyy
+spaces = {}
+
+space = []          # The space used for rendering the environment
+obs = []            # Obstacles overlay, exists on top of the space
+obs_chance = 10      # Used for random obstacle generation
+num_bads = 3
+sleep_time = 1      # Sleep time between renders and prints, strictly cosmetic
+debug_on = False    # Flag, if debug is enabled
+rand_gen = False    # Flag, if random generation is on
+draw = False        # Flag, if clearing and rendering is proper
+file_use = False
+new_labels = {}     # Temp dictionary, used to remove elements from an entity's list of labels
+disable_enemies = False
+
+major_regen = 20    # Value of regen at the end of a turn
+minor_regen = 5     # Value of regen at the end of a turn (but smaller, used for other thingssssss)
+turn_num = 0        # Tracks the number of turns
+
+# Depricated, it forces the user to give a name, but here just in case
+player_name = "Default"
+
+class Space:
+    def __init__(self, width, height, name):
+        self.name = name
+        # Adjacent spaces 
+        self.adjacent = {
+            "up":None,
+            "down":None,
+            "left":None,
+            "right":None
+        }
+        self.width = width
+        self.height = height
+        self.space = []
+
+        # I think I should clear space every time, since its just used for the rendering?
+        self.obs = []
+        self.entities = []
+
+        # Randomly place obstacles
+        for i in range(height):
+            row = []
+            for j in range(width):
+                # I need to decide how to place these
+                # Probably should do it in random for now
+                if obs_chance > random.randint(0,100):
+                    row.append(models["rock"])
+                else:
+                    row.append("   ")
+            self.obs.append(row)
+
+class Entity:
+    def __init__(self, name, x, y, speed=1, health=100, attack=10, defense=5, stamina=100, mana=100):
+        # I can list comprehension this lmao
+        self.dead = False
+
+        # TODO, just a thought, wanted to had stuff to use as gear
+        # Will need to create a new table for this once I figure out the logic for actions and attributes
+        self.equipment = {
+            "left_hand":"",
+            "right_hand":"",
+            "chest":"",
+            "legs":"",
+            "head":"",
+            "accessory1":"",
+            "accessory2":"",
+        }
+
+        # Effective values are the actual values being read? and are affected my effects
+        # But the originals are tracked, before effects
+        self.stats = {
+            # Resource stats
+            "health":health,
+            "max_health":health * 2,
+            "effective_max_health": health * 2,
+
+            "stamina": stamina,
+            "max_stamina": stamina * 2,
+            "effective_max_stamina": mana * 2,
+
+            "mana": mana,
+            "max_mana": mana * 2,
+            "effective_max_mana": mana * 2,
+
+            # Modifier stats
+            "attack": attack,
+            "max_attack": attack * 2,
+            "effective_attack": attack,
+
+            "defense": defense,
+            "max_defense": defense * 2,
+            "effective_defense": defense,
+
+            "speed":speed,
+            "max_speed":speed * 2,
+            "effective_speed":speed,
+        }
+
+        # Some coords for rendering I guess?
+        # Lets draw it all using the os.system(sys_clear)
+        self.x = x
+        self.y = y
+
+        # Some important labels
+        self.name = name
+        self.target = ""
+
+        # This one is going to be used for attributes and effects
+        self.labels = {}
+
+    # Applies move to entity
+    def move(self, dir):
+        debug(f"Applying move {dir}")
+
+        # Check direction, and if move is valid
+        if dir[0] == "u":
+            # Space is on map AND Space is empty
+            # First, check if its moving into a new space, and that there is a space there
+            if empty(self.x, self.y - 1):
+                self.y -= 1
+            else:
+                debug("Can't move there, skipping turn")
+                return -1
+        elif dir[0] == "d":
+            if empty(self.x, self.y + 1):
+                self.y += 1
+            else:
+                debug("Can't move there, skipping turn")
+                return -1
+        elif dir[0] == "l":
+            if empty(self.x - 1, self.y):
+                self.x -= 1
+            else:        
+                debug("Can't move there, skipping turn")
+                return -1
+        elif dir[0] == "r":
+            if empty(self.x + 1, self.y):
+                self.x += 1
+            else:        
+                debug("Can't move there, skipping turn")
+                return -1
+        return 0
+
+    # Applies effects to entity
+    # Holy shit, I actually did it lmao
+    # I gotta implement how this is going to work still, I need to figure that out lmao
+    def effects(self, eff, i):
+        # id is a result of bad planning, but now it effective has its own index in the list of entities
+        debug(colored(f"Enforcing effect to {self.name}", 'white', 'on_red'))
+        effect = attributes[eff].split()
+        base = 1
+        stat = effect[1]
+        opp = effect[2]
+        modifier = effect[3]
+        secondary = effect[6]   # Just in case I want to chain effects I guess? put the attribute name here
+
+        debug(effect)
+
+        # If this is assigning a value, then let it be done to
+        if opp == "=":
+            self.stats[stat] = base * int(modifier)
+        if effect[0] == "status":
+            # This should repeat every turn
+            if opp == "-":
+                self.stats[stat] -= base * int (modifier)
+            if opp == "+":
+                self.stats[stat] += base * int (modifier)
+        elif effect[0] == "stat":
+            # TODO
+            # But how do I only make this go up once :skull:
+            # Or maybe replace all status with "perm" and stat with "temp"
+            # This way we can reset all temp stats, while also increasing them overtime
+            # Or just let it increase LOL
+            # Make sure to balance around it I guess
+            # until I send this to others and they decide to fix it somehow
+            if opp == "-":
+                self.stats[stat] -= base * int (modifier)
+            if opp == "+":
+                self.stats[stat] += base * int (modifier)
+
+        # Secondary effects
+        # So long as its not already in labels lol
+        # This includes recursive calls now lmao
+        if secondary != "none" and secondary not in self.labels:
+            debug(colored(f'SECONDARY EFFECT: {secondary}', 'white', 'on_red'))
+            apply_effect(i, secondary)
+            self.effects(secondary, i)
+    
+    #TODO
+    def apply_action(self, index, action, direction):
+        # Turns out action's already parsed? lmao ok
+
+        debug(action)
+
+        # This is like, all of them LOL
+        if action[0] == "attack":
+
+            # Certain attacks cost certain things
+            # I added health from some risky blood magic type stuff
+            # good to open your horizons lmao
+            # Also should check if stamina or mana become less than zero, then we reset and raise exception
+
+            # Now we just need to read the action!
+            # Space saving
+            # I'll keep the old version in case something bad happens tho lmao
+            self.stats[action[6]] -= int(action[7])
+            if self.stats[action[6]] < 0:
+                self.stats[action[6]] += int(action[7])
+                raise Exception(f"Not enough {action[6]}")
+
+            # Check range first
+
+            target = self.in_range(index, int(action[1]) + 1, direction)
+
+            if target > -1:
+                # Get damage multiplier
+                print(f"{self.name} has hit {space.entities[target].name}")
+
+                multiplier = random.randint(int(action[2]), int(action[3]))
+
+                # Whether or not the effect takes place
+                if int(action[5]) >= random.randint(0, 100):
+                    apply_effect(target, action[4])
+
+                # Then we do damage calcs 
+                # Actually it's almost done lmao, I already apply effects, apply cost, check range
+                # I even did the damage rolls already
+                # Now I just need the logic between target and self stats
+
+                # I mean, its as basic as it gets
+                damage = (self.stats["effective_attack"] * multiplier) - space.entities[target].stats["effective_defense"]
+                space.entities[target].stats["health"] -= damage
+
+            else:
+                print("MISSED")
+
+        elif action[0] == "heal":
+            # TODO maybe add an encoding for heals, then add their effects here
+            pass
+
+        else:
+            print(colored('ERROR: CHOSEN ATTACK HAS NO ATTRIBUTE', 'white', 'on_red'))
+            print(colored('ERROR: CONTACT DEVS, WHY IS THIS HAPPENING?', 'white', 'on_red'))
+    
+    def in_range(self, index, rng, direction):
+
+        # TODO Add a thing for checking obstacles
+        # Maybe throw an error if an obstacle is found, then catch it in the function call
+        # I think if it hits and obstacle, just stop checking lmao
+        try:
+            if direction == "up":
+                for j in range(1, rng):
+                    debug(colored(f'Hitting up at {self.x}, {self.y - j}', 'black', 'on_white'))
+                    if space.obs[self.y - j][self.x] != "   ":
+                        debug(colored("You hit an obstacle!", 'white', 'on_red'))
+                        return -1
+            if direction == "down":
+                for j in range(1, rng):
+                    debug(colored(f'Hitting down at {self.x}, {self.y + j}', 'black', 'on_white'))
+                    if space.obs[self.y + j][self.x] != "   ":
+                        debug(colored("You hit an obstacle!", 'white', 'on_red'))
+                        return -1
+            if direction == "left":
+                for j in range(1, rng):
+                    debug(colored(f'Hitting left at {self.x - j}, {self.y}', 'black', 'on_white'))
+                    if space.obs[self.y][self.x - j] != "   ":
+                        debug(colored("You hit an obstacle!", 'white', 'on_red'))
+                        return -1
+            if direction == "right":
+                for j in range(1, rng):
+                    debug(colored(f'Hitting right at {self.x + j}, {self.y}', 'black', 'on_white'))
+                    if space.obs[self.y][self.x + j] != "   ":
+                        debug(colored("You hit an obstacle!", 'white', 'on_red'))
+                        return -1
+        except Exception as e:
+            debug(colored('Definitely failed here', 'white', 'on_red'))
+            print(colored(e, 'white', 'on_red'))
+
+        
+        debug(colored(f'NO OBSTACLES WERE HIT!', 'black', 'on_white'))
+
+        hit = space_height * space_width    # These are guaranteed to be bigger than space height and space widght when area > 1
+
+        # No obstacles, so lets hit these clowns
+        for i in range(len(space.entities)):
+            # How do I do this? LOL
+            # Check entities after
+            if direction == "up":
+                for j in range(1, rng):
+                    try:
+                        if space.entities[i].y == self.y - j and space.entities[i].x == self.x:
+                            debug(f"FOUND TARGET: {abs(space.entities[i].y - self.y)}, {space.entities[i].y }, {self.y}")
+                            debug(f"FOUND TARGET: {abs(space.entities[i].x - self.x)}, {space.entities[i].x }, {self.x}")
+                            debug(f"FOUND TARGET: {space.entities[i].name}")
+                            try:
+                                if abs(space.entities[i].y - self.y) < abs(space.entities[hit].y - self.y):
+                                    debug("TARGET IS CLOSER THAN LAST")
+                                    hit = i
+                            except:
+                                hit = i
+                    except:
+                        # it if out of bounds, ignore it lmao
+                        pass
+            if direction == "down":
+                for j in range(1, rng):
+                    try:
+                        if space.entities[i].y == self.y + j and space.entities[i].x == self.x:
+                            debug(f"FOUND TARGET: {abs(space.entities[i].y - self.y)}, {space.entities[i].y }, {self.y}")
+                            debug(f"FOUND TARGET: {abs(space.entities[i].x - self.x)}, {space.entities[i].x }, {self.x}")
+                            debug(f"FOUND TARGET: {space.entities[i].name}")
+                            try:
+                                if abs(space.entities[i].y - self.y) < abs(space.entities[hit].y - self.y):
+                                    debug("TARGET IS CLOSER THAN LAST")
+                                    hit = i
+                            except:
+                                hit = i
+                    except:
+                        # it if out of bounds, ignore it lmao
+                        pass
+            if direction == "left":
+                for j in range(1, rng):
+                    try:
+                        if space.entities[i].x == self.x - j and space.entities[i].y == self.y:
+                            debug(f"FOUND TARGET: {abs(space.entities[i].y - self.y)}, {space.entities[i].y }, {self.y}")
+                            debug(f"FOUND TARGET: {abs(space.entities[i].x - self.x)}, {space.entities[i].x }, {self.x}")
+                            debug(f"FOUND TARGET: {space.entities[i].name}")
+                            try:
+                                if abs(space.entities[i].x - self.x) < abs(space.entities[hit].x - self.x):
+                                    debug("TARGET IS CLOSER THAN LAST")
+                                    hit = i
+                            except:
+                                hit = i
+                    except:
+                        # it if out of bounds, ignore it lmao
+                        pass
+            if direction == "right":
+                for j in range(1, rng):
+                        try:
+                            if space.entities[i].x == self.x + j and space.entities[i].y == self.y:
+                                debug(f"FOUND TARGET: {abs(space.entities[i].y - self.y)}, {space.entities[i].y }, {self.y}")
+                                debug(f"FOUND TARGET: {abs(space.entities[i].x - self.x)}, {space.entities[i].x }, {self.x}")
+                                debug(f"FOUND TARGET: {space.entities[i].name}")
+                                try:
+                                    if abs(space.entities[i].x - self.x) < abs(space.entities[hit].x - self.x):
+                                        debug("TARGET IS CLOSER THAN LAST")
+                                        hit = i
+                                except:
+                                    hit = i
+                        except:
+                            # it if out of bounds, ignore it lmao
+                            pass
+        debug(f"HIT: {hit}")
+        if hit == space_height * space_width:
+            return -1
+        return hit
+    
+    def __str__(self):
+        ent_str = f"===Entity===\nName: {self.name}\nCoor: {self.x},{self.y}\n"
+
+        if len(self.labels) > 0:
+            ent_str += "Effects:\n"
+            for label in self.labels:
+                ent_str += label + "\n"
+        else:
+            pass
+
+        return ent_str
+
+def debug(message):
+    if debug_on == True:
+        print(message)
+
+def parse():
+    parse = argparse.ArgumentParser(
+        prog="@",
+        description="I don't even know to be honest, I kinda just thought it'd be cool to use"
+                    "this symbol as a binary. But now I'm not sure what to even do with these"
+                    "arguments. Maybe have it take file names to read or something idk"
+    )
+    parse.add_argument('name', help='Name of the player')
+    parse.add_argument('-d', '--debug', action='store_true', help='Enables Debug')
+    parse.add_argument('-D', '--draw', action='store_true', help='Enables rendering')
+    # idk if I could set these to be limited choices?
+    # or I could just do flags lmao
+    parse.add_argument('-r', '--rand', action='store_true', help='Enables random generation')
+    parse.add_argument('-f', '--folder', help='Folder containing potential level designs')
+    parse.add_argument('-x', '--dimension', help='Dimensions of the space, mostly for debugging. In the form WxH as a single string with no space')
+    return parse.parse_args()
+
+def init(name, map_enc):
+    global space
+    # So before we add entities, lets place some obstacles that they must move around
+    # looks like we can't just apply affects through the constructor,
+    # so we'll add them in the init
+
+    if file_use == True:
+        debug(colored('GENERATING WITH FILES'))
+        # The logic is lost on me now, mind kinda foggy
+        # Split into 2 stages
+        main_name = map_enc[0][0].strip()
+
+        # Stage 1, create spaces using the files
+        for m in map_enc:
+            map_name = m[0].strip()
+            spaces[map_name] = Space(space_width, space_height, map_name)
+            for i in range(space_height):
+                for j in range(space_width):
+                    #debug(f"Man: {m[i + 1][j]}")
+                    if m[i + 1][j] == '@':
+                        debug(colored(f'Adding obstacle to {map_name} at ({i+1},{j})', 'black', 'on_white'))
+                        spaces[map_name].obs[i][j] = models["rock"]
+                    elif m[i + 1][j] == 'E':
+                        # If there's an enemy in the space
+                        # idk how to choose
+                        # probably should make it random? I'll make it random
+                        chosen_enemy = random.choice(list(enemies.keys()))
+                        debug(colored(f'Adding {chosen_enemy} to {map_name} at ({i+1},{j})', 'black', 'on_white'))
+                        spaces[map_name].entities.append(Entity(chosen_enemy, j, i))
+                        spaces[map_name].obs[i][j] = "   "
+                        pass
+                    else:
+                        spaces[map_name].obs[i][j] = "   "
+            #debug(f"{spaces[map_name].obs}")
+        
+        # Stage 2, not that there are objects, we gotta add their adjacencies
+        # The adjacencies are going to need to be bi-directional, but technically they don't have to be?
+        # nvm, the way I encoded it, they don't have to be, I just need to call the names I think
+        for m in map_enc:
+            map_name = m[0].strip()
+            map_u = m[11].strip().split(':')[1]
+            map_d = m[12].strip().split(':')[1]
+            map_l = m[13].strip().split(':')[1]
+            map_r = m[14].strip().split(':')[1]
+
+            debug(f"{map_u}, {map_d}, {map_l}, {map_r}")
+            # Something something
+            if map_u != "None":
+                spaces[map_name].adjacent["up"] = spaces[map_u]
+            if map_d != "None":
+                spaces[map_name].adjacent["down"] = spaces[map_d]
+            if map_l != "None":
+                spaces[map_name].adjacent["left"] = spaces[map_l]
+            if map_r != "None":
+                spaces[map_name].adjacent["right"] = spaces[map_r]
+
+        space = spaces[main_name]
+    else:
+        main = Space(space_width, space_height, "center")
+        space = main
+        if debug_on == True:
+            # Some extra spaces
+            # Mostly for debug stuff
+            # I'll add the file encoding later
+            # The issue is finding the connection between spaces
+            # Maybe I should make a list of spaces?
+            up = Space(space_width, space_height, "up")
+            down = Space(space_width, space_height, "down")
+            left = Space(space_width, space_height, "left")
+            right = Space(space_width, space_height, "right")
+
+            # Lets add them to a list so that we can track them without having to go into the current space
+            spaces["main"] = main
+            spaces["up"] = up
+            spaces["down"] = down
+            spaces["left"] = left
+            spaces["right"] = right
+
+            # Set adjacencies
+            main.adjacent["up"] = up
+            up.adjacent["down"] = main
+
+            main.adjacent["down"] = down
+            down.adjacent["up"] = main
+
+            main.adjacent["left"] = left
+            left.adjacent["right"] = main
+
+            main.adjacent["right"] = right
+            right.adjacent["left"] = main
+
+            # Fixed enemies
+            main.entities.append(Entity("wizard", int(space_width / 2), int(space_height / 2)))
+            #entities.append(Entity("hulk", space_width - 1, space_height - 2))
+            #entities.append(Entity("mage", space_width - 2, space_height - 2))
+            #entities.append(Entity("skeleton", space_width - 2, space_height - 1))
+            #entities.append(Entity("skeleton", 1, 0))
+        else:
+            print(colored('ERROR', 'white', 'on_red'))
+            print("Bro we have no means to generate this yet")
+
+            main.entities.append(Entity("wizard", space_width - 1, space_height - 1))
+            main.entities.append(Entity("hulk", space_width - 1, space_height - 2))
+            main.entities.append(Entity("mage", space_width - 2, space_height - 2))
+            main.entities.append(Entity("skeleton", space_width - 2, space_height - 1))
+
+    # Insert the player to whatever the map is lmao
+    space.entities.insert(0, Entity(name, 0, 0, speed=1))
+
+def render_bar(val, max_val, rng, val_type):
+    ret = ""
+
+    # ok, how tf am I supposed to draw all this stuff :skull
+
+    for i in range(rng):
+        if i / rng <= val / max_val:
+            if val_type == "health":
+                ret += colored (' ', 'red', 'on_red')
+            elif val_type == "mana":
+                ret += colored (' ', 'cyan', 'on_cyan')
+            elif val_type == "stamina":
+                ret += colored (' ', 'light_green', 'on_light_green')
+        else:
+            ret += colored (' ', 'grey', 'on_grey')
+
+    return ret
+
+def render(name):
+    global space
+
+    # Cleared for smoother rendering lol
+    if draw == True:
+        os.system(sys_clear)
+
+    print(f"=== {space.name} ===")
+
+    render_space = []
+    # I should check something for obstacles maybe
+    # The space could have the characters '/@\'
+
+    back_main = 'green'
+    back_high = 'on_black'
+
+    # Builds the space array based on the elements of the space object
+    for i in range(space.height):
+        row = []
+        for j in range(space.width):
+            if space.obs[i][j] == "   ":
+                row.append(colored(models["grass"], back_main, back_high))
+            else:
+                row.append(colored(space.obs[i][j], 'dark_grey', back_high))
+        render_space.append(row)
+
+    # Adds entities to space again
+    # Populates space array used in rendering
+    for i, ent in enumerate(space.entities):
+
+        clr = "white"
+        hlt = "on_black"
+
+        # Where the last effect read will be top color
+        # Order of presentation for highlight
+        if "burn" in ent.labels:
+            hlt = "on_red"
+        if "paralysis" in ent.labels:
+            hlt = "on_yellow"
+        if "frozen" in ent.labels:
+            hlt = "on_blue"
+
+        # Order of presentation for color
+        if "acid" in ent.labels:
+            clr = "light_green"
+        if "shatter" in ent.labels:
+            clr = "dark_grey"
+
+        # I think the entity gear can pop up here?
+        if i == 0:
+            # Lets check for status effects in labels perhaps?
+            render_space[ent.y][ent.x] = colored(f" {ent.name[0]} ", clr, hlt)
+        # elif ent.name == "something else"
+        else:
+            # This WILL through an error if the enemy isn't valid
+            # Which is good for level design lmao
+            render_space[ent.y][ent.x] = colored(f" {enemies[ent.name][0]} ", clr, hlt)
+
+    # The actual render part
+    space_image = ""
+    for i in range(space.height):
+        for j in range(space.width):
+            if render_space[i][j] != ' ':
+                space_image += str(render_space[i][j])
+            else:
+                # Empty space
+                # I don't even think this is used anymore lmao
+                space_image += '   '
+        if i == 0:
+            space_image += " Name:    " + space.entities[0].name + "\tTurn: " + str(turn_num) + " {" + str(space.entities[0].x) + "," + str(space.entities[0].y) + "}"
+        if i == 1:
+            space_image += " Heath:   " + render_bar(space.entities[0].stats["health"], space.entities[0].stats["effective_max_health"], 10, "health")
+        if i == 2:
+            space_image += " mana:    " + render_bar(space.entities[0].stats["mana"], space.entities[0].stats["effective_max_mana"], 10, "mana")
+        if i == 3:
+            space_image += " stamina: " + render_bar(space.entities[0].stats["stamina"], space.entities[0].stats["effective_max_stamina"], 10, "stamina")
+        space_image += '\n'
+    print(space_image.strip())
+    print("Terminal:")
+
+# TODO
+# I'm genuinely curious how this could work
+# I might be able to, I just need an encoding for the animations that would define what to draw
+# and relative to what
+# Action    defines what to draw
+# Dir       defines what direction to draw it
+# Src       defines where to start drawing
+# Then call render after each thing?
+def animate(action, dir, src):
+    # I think I can hard code certain animations so far
+    pass
+
+# TODO Lets see if we can animate someone getting hit
+# So this will get called, and then we let it run after each hit
+# This may require more refactoring lmao
+def animate_hit(type):
+    pass
+
+# Checks if a provided coor is empty
+def empty(x, y):
+    try:
+        if space.obs[y][x] != '   ':
+            return False
+        for ent in space.entities:
+            if ent.x == x and ent.y == y:
+                return False
+    except:
+        return True
+    return True
+
+def regen(e, stat, effective_max, val):
+    space.entities[e].stats[stat] += val
+    if space.entities[e].stats[stat] > space.entities[e].stats[effective_max]:
+        space.entities[e].stats[stat] = space.entities[e].stats[effective_max]
+
+def apply_effect(e, effect):
+    eff = attributes[effect].split()
+    debug(f"Applying {effect} on {space.entities[e].name}")
+    try:
+        space.entities[e].labels[effect] += random.randint(int(eff[4]), int(eff[5]))
+        new_labels[effect] += random.randint(int(eff[4]), int(eff[5]))
+    except:
+        space.entities[e].labels[effect] = random.randint(int(eff[4]), int(eff[5]))
+        new_labels[effect] = random.randint(int(eff[4]), int(eff[5]))
+
+def change_space(direction):
+    global space
+    debug(colored(f'MOVING {direction}', 'white', 'on_red'))
+    debug(colored(f'WE ARE CHANGING SPACES', 'white', 'on_red'))
+
+    # Extract player and place it in new space
+    # If there is a space
+    # One of the few times I actually checked, instead of just throwing it into a try catch lmao
+    if space.adjacent[direction] != None:
+        player = space.entities.pop(0)
+        space.adjacent[direction].entities.insert(0, player)
+
+        new_space = space.adjacent[direction]
+        space = new_space
+
+        if direction == "up":
+            space.entities[0].y = space.height - 1
+        if direction == "down":
+            space.entities[0].y = 0
+        if direction == "left":
+            space.entities[0].x = space.width - 1
+        if direction == "right":
+            space.entities[0].x = 0
+        
+
+        debug(colored(f'MOVED {direction}, {space.entities[0].x}, {space.entities[0].y}', 'white', 'on_red'))
+
+        return True
+    else:
+        # If there's no space, just reset the player's coords
+        print("Can't move there!")
+        if direction == "up":
+            space.entities[0].y += 1
+        if direction == "down":
+            space.entities[0].y -= 1
+        if direction == "left":
+            space.entities[0].x += 1
+        if direction == "right":
+            space.entities[0].x -= 1
+
+        return False
+
+def main_loop(args):
+    global entities
+    global turn_num
+    global new_labels
+    global disable_enemies
+
+    # State booleans, so we know what states we're in
+    running = True
+
+    # Lets give each entity a certain 
+
+    while running == True:
+        turn_num += 1
+        render(args.name)
+
+        # Set the turns based on speed of entities
+        # How does this even work in other games?
+        # What if 1 speed stat is like a number in the list
+        # Then, we shuffle it
+        for index, ent in enumerate(space.entities):
+            for i in range(ent.stats["speed"]):
+                turns.append(index)
+        
+        if debug_on == False:
+            random.shuffle(turns)
+
+        debug(f"Turns {turns}")
+
+        # Actually, lets apply effects here
+        # At the beginning of each turn, something happens based on your attributes?
+
+        if debug_on == True:
+            for ent in space.entities:
+                print(f"Ent '{ent.name}' has labels: {ent.labels}")
+                for key in ent.stats:
+                    #print(f"\t{key}: {ent.stats[key]}")
+                    pass
+
+        for turn in turns:
+            render(args.name)
+            
+            # Each user is given a move turn
+            # Then an action turn
+            # And they're limited to certain moves
+
+            # Player's turn
+            if turn == 0:
+
+                # User's move turn
+                # This should be done
+                valid = False
+                while valid == False:
+                    print("User's moving turn")
+                    user_in = input("Move > ").lower().split()
+                    time.sleep(sleep_time)
+                    # Lets assume entities[0] is always player?
+
+                    # Just some for fun and edge cases
+                    # Maybe even for commands
+                    if len(user_in) <= 0:
+                        # Bruh
+                        pass
+                    elif user_in[0] == "exit":
+                        break
+                        #raise Exception("Game ended")
+                    elif user_in[0] == "freeze!":  # Freezes everyone!
+                        print("Everybody, Freeze!")
+                        for i in range(len(space.entities)):
+                            apply_effect(i, "frozen")
+                    elif user_in[0] == "burn!":  # Burns everyone!
+                        print("FIRE")
+                        for i in range(len(space.entities)):
+                            apply_effect(i, "burn")
+                    elif user_in[0] == "thunder!":  # Freezes everyone!
+                        print("THUNDER")
+                        for i in range(len(space.entities)):
+                            apply_effect(i, "paralysis")
+                    elif user_in[0] == "disable" and debug_on == True:  # Freezes everyone!
+                        disable_enemies = not disable_enemies
+                        print("Enemies toggled")
+                    elif user_in[0] in ["up", "down", "left", "right", "skip", "u", "d", "l", "r", "s"]:
+                        space.entities[0].move(user_in[0])
+                        valid = True
+                    else:
+                        print("Please give a valid input")
+                
+                # It broke out without a valid input, kill the program now
+                if valid == False:
+                    running = False
+                    break
+                
+                # Lets check is they're in a new space here
+                if space.entities[0].x > space_width - 1:
+                    if change_space("right"):
+                        break
+                if space.entities[0].x < 0:
+                    if change_space("left"):
+                        break
+                if space.entities[0].y > space_height - 1:
+                    if change_space("down"):
+                        break
+                if space.entities[0].y < 0:
+                    if change_space("up"):
+                        break
+
+                time.sleep(sleep_time)
+
+                if draw == True:
+                    render(args.name)
+
+                # User's action turn
+                valid = False
+                while valid == False:
+                    print("User's action turn")
+                    user_in = input("Act  > ").lower().split()
+                    time.sleep(sleep_time)
+                    
+                    try: 
+                        action = actions[user_in[0]].split()
+                        if action[0] == "skip":
+                            print("Nothing")
+                        if action[0] == "attack":
+                            # Not enought arguments
+                            if len(user_in) != 2:
+                                raise Exception("Not enough arguments")
+                            # Invalid arguments
+                            if user_in [1] not in directions:
+                                raise Exception("No valid direction")
+
+                            # Read action list
+                            debug(f"Action: {user_in[0]} {user_in[1]}")
+
+                            space.entities[0].apply_action(turn, action, user_in[1])
+                            
+                        valid = True
+                    except Exception as e:
+                        print("Please choose valid action")
+                        debug(e)
+                
+                time.sleep(sleep_time)
+
+                if draw == True:
+                    render(args.name)
+
+            else:
+                # This is actually a pretty complex part
+                # So there's two
+                # This first one is the movement of the enemies
+                # I think I'll calculate the direction of the player
+                # Then move according to the enemy type encoding
+                # This is where the other shitters do their turn
+                if disable_enemies == False:
+                    print(f"{space.entities[turn].name}'s movement turn")
+
+                    # What if I made a list of valid moves
+                    # then tried them out in order
+                    best_move = []
+
+                    # Lets make down a default for now
+                    horz = space.entities[turn].x - space.entities[0].x    # Horizontal distance
+                    vert = space.entities[turn].y - space.entities[0].y    # Vertical distance
+
+                    # Check if closer vertically or horizontally
+                    # And if there's an obstacle, maybe chose a move that isn't blocked?
+                    # This check if the the thing is right next to them
+                    # This is just for basic AI checking, since all the creatures move closer anyway
+                    if not (horz == 0 and vert == 1) and not (horz == 1 and vert == 0):
+                        debug(colored(f'({horz},{vert})', 'white', 'on_red'))
+
+                        # I think it'd be better to do quadrants
+                        # nvm, I need to choose between horz/vert
+                        # Did I just write every permutation? perhaps
+                        if horz >= 0 and vert >= 0:
+                            # DONE
+                            debug(colored('top left', 'white', 'on_red'))
+                            if abs(horz) > abs(vert):
+                                best_move.append("left")
+                                best_move.append("up")
+                                best_move.append("right")
+                                best_move.append("down")
+                            else:
+                                best_move.append("up")
+                                best_move.append("left")
+                                best_move.append("down")
+                                best_move.append("right")
+                        elif horz >= 0 and vert <= 0:
+                            # DONE
+                            debug(colored('bottom left', 'white', 'on_red'))
+                            if abs(horz) > abs(vert):
+                                best_move.append("left")
+                                best_move.append("down")
+                                best_move.append("right")
+                                best_move.append("up")
+                            else:
+                                best_move.append("down")
+                                best_move.append("left")
+                                best_move.append("up")
+                                best_move.append("right")
+                        elif horz <= 0 and vert >= 0:
+                            debug(colored('top right', 'white', 'on_red'))
+                            if abs(horz) > abs(vert):
+                                best_move.append("right")
+                                best_move.append("up")
+                                best_move.append("left")
+                                best_move.append("down")
+                            else:
+                                best_move.append("up")
+                                best_move.append("right")
+                                best_move.append("down")
+                                best_move.append("left")
+                        elif horz <= 0 and vert <= 0:
+                            debug(colored('bottom right', 'white', 'on_red'))
+                            if abs(horz) > abs(vert):
+                                best_move.append("right")
+                                best_move.append("down")
+                                best_move.append("left")
+                                best_move.append("up")
+                            else:
+                                best_move.append("down")
+                                best_move.append("right")
+                                best_move.append("up")
+                                best_move.append("left")
+                        
+                        # Try the best moves
+                        best_found = False
+                        for m in best_move:
+                            if space.entities[turn].move(m) == 0:
+                                debug(f"{space.entities[turn].name} moved {m}")
+                                best_found = True
+                                break
+                    
+                    if best_found == False:
+                        debug(f"{space.entities[turn].name} din't move!")
+
+                time.sleep(sleep_time)
+
+                if draw == True:
+                    render(args.name)
+
+                # TODO
+                # This is the scarier part, mostly in terms of attacking patterns
+                # I have selected the move already
+                # Actually it might not be bad
+                # I could check the direction of the player, then apply move and action relative to that?
+                
+                # I just realized friendly fire is going to be on LOL
+                # I could probably disable by adding a team tag in Entity, and only hit those that aren't in the same team
+                # But friendly fire is funny lmao
+
+                print(f"{space.entities[turn].name}'s attack turn")
+
+                # TODO
+                # Another thing to add in the future, I could make a pool of moves for each
+                # enemy type. Just make sure to check something
+
+                time.sleep(sleep_time)
+
+                if draw == True:
+                    render(args.name)
+
+        if running == False:
+            break
+        turns.clear()
+
+        # Regen stats at the end of a turn and apply effects
+        for e in range(len(space.entities)):
+            # I could also make this a stat
+            # But for now make it a passive thing for all entities
+
+            regen(e, "health", "effective_max_health", minor_regen)
+            regen(e, "mana", "effective_max_mana", major_regen)
+            regen(e, "stamina", "effective_max_stamina", major_regen)
+
+            # Now to go over everyone's label and check for effects
+            #debug(colored(f'Applying effects on {entities[e].name}', 'white', 'on_red'))
+            new_labels = {}
+            keys = [k for k in space.entities[e].labels]
+            for key in keys:
+                space.entities[e].labels[key] -= 1
+
+                # Applies effects
+                if space.entities[e].labels[key] > 0:
+                    #debug(f"Effect: {key}")
+                    space.entities[e].effects(key, e)
+                    new_labels[key] = space.entities[e].labels[key]
+                elif attributes[key].split()[0] == "stat":
+                    debug(colored(f'RESETTING STATS FOR {space.entities[e].name}', 'white', 'on_red'))
+                    # At this point, the effect's turn has ended, and thus must set things to their default value
+                    if attributes[key].split()[1] == "max_health":
+                        space.entities[e].stats["effective_max_health"] = space.entities[e].stats["max_health"]
+                    if attributes[key].split()[1] == "max_stamina":
+                        space.entities[e].stats["effective_max_stamina"] = space.entities[e].stats["max_stamina"]
+                    if attributes[key].split()[1] == "max_mana":
+                        space.entities[e].stats["effective_max_mana"] = space.entities[e].stats["max_mana"]
+                    if key == "attack":
+                        space.entities[e].stats["effective_attack"] = space.entities[e].stats["attack"]
+                    if key == "defense":
+                        space.entities[e].stats["effective_defense"] = space.entities[e].stats["defense"]
+                    if key == "speed":
+                        space.entities[e].stats["effective_speed"] = space.entities[e].stats["speed"]
+                    
+                    pass
+
+            # New labels without all the 0 turn burns
+            debug(f"\tBruh: {new_labels}")
+            space.entities[e].labels = new_labels
+            new_labels = {} # This is just for safety, to really clear new_labels
+            
+            # Remove all empty effects by making a list that doesn't have empty effects lmao
+            
+
+            # Lastly (so far), check if anyone died yet
+            # And YES, things CAN still move and do stuff if they have been 0'd on the same turn
+            if space.entities[e].stats["health"] <= 0:
+                space.entities[e].dead = True
+                print(colored(f"{space.entities[e].name} is dead", 'black', 'on_red'))
+                if e == 0:
+                    running = False
+        
+        # Clean for dead entities
+        space.entities = [e for e in space.entities if e.dead == False]
+
+        # No more entities, end cycle
+        # Let them keep moving
+
+        # Since there are other spaces they can go to now
+
+        #if len(space.entities) == 1:
+        #    running = False
+
+        render(args.name)
+    print("Good bye!")
+
+if __name__ == '__main__':
+    # Get some arguments that I don't even know what I'm going to do with the information
+    random.seed(time.time())
+    args = parse()
+    debug_on = args.debug
+    draw = args.draw
+    rand_gen = args.rand
+
+    # Stuff I'll need to send to init
+    map_encodings = []
+
+    # I'd like to try to read from files, and this is where the OS specific code is going to need to come in
+
+    # I don't know anyone on Mac tbh
+    # Tho I should account for that eh?
+    if args.folder != None:
+        print("Reading from files!")
+        file_use = True
+        # I gotta read the folder location, so lets just kill the program at the end of this
+        fold = f"{os.getcwd()}/{args.folder}"
+        debug(f"Looking in folder '{ fold}'")
+        content = [f for f in os.listdir(fold) if os.path.isfile(os.path.join(fold, f))]
+        debug(f"Content: {content}")
+
+        for f in content:
+            if f.split('_')[1] == "actions":
+                debug(colored('Appending actions!', 'white', 'on_red'))
+                # I should be able to just read these row by row lmao
+                with open(f"{fold}/{f}") as file:
+                    for line in file.readlines():
+                        name = line.split(' ')[0]
+                        stat = ' '.join(line.split(' ')[1:])
+                        debug(f"Adding: '{name}'")
+                        debug(f"Stat: '{stat}'")
+                        actions[name] = stat
+            if f.split('_')[1] == "attributes":
+                debug(colored('Appending attributes!', 'white', 'on_red'))
+                # Row by row, add to table
+                with open(f"{fold}/{f}") as file:
+                    for line in file.readlines():
+                        name = line.split(' ')[0]
+                        stat = ' '.join(line.split(' ')[1:])
+                        debug(f"Adding: {name}")
+                        debug(f"Stat: {stat}")
+                        attributes[name] = stat
+            if f.split('_')[1] == "level":
+                debug(colored('Parsing levels...', 'white', 'on_red'))
+                # This is the complex one, where I need to parse through a file
+                with open(f"{fold}/{f}") as file:
+                    file_content = file.readlines()
+                    dims = file_content.pop(0).split('x')
+                    space_width = int(dims[0].strip())
+                    space_height = int(dims[1].strip())
+                    while True:
+                        if file_content:
+                            debug(f'Reading map {file_content [:5 + int(dims[0])]}')
+                            map_encodings.append(file_content[:5 + int(dims[0])])
+                            file_content = file_content[5 + int(dims[0]):]
+                        else:
+                            break
+                        #time.sleep(1)
+                    # I think at this point, I should do this all in init
+
+        #raise Exception("Ending program so that it doesn't keep going lmao")
+    else:
+        # dimensions, this is optional
+        file_use = True
+        if args.dimension != None:
+            dims = args.dimension.split('x')
+            space_width, space_height = int(dims[0]), int(dims[1])
+    if debug_on == True:
+        print(args)
+        # Debug is usually only done on my computer
+        # or if they have the src, then they can edit this themselves LOL
+        # Right here, just change it to match your os
+        # Chances are if you're looking at this src code, you know what to change it to anyway
+        sys_clear = "clear"
+        sleep_time = 0
+
+        # At this point, I need to read the file to give dimensions
+        # And to give their connections?
+        # :skull:
+
+        # this is all going to be done in Linux, I can't even begin to wonder how this would work in windows LOL
+        # But once this is done and working, I might take it out to do its own thing without needing 
+        
+    else:
+        if OS == "Windows":
+            print("Configuring for Windows...")
+            time.sleep(5)
+            sys_clear = "cls"
+        if OS == "Linux":
+            print("Configuring for Linux...")
+            time.sleep(5)
+            sys_clear = "clear"
+        if OS == "Darwin":
+            print("Configuring for Mac...")
+            time.sleep(5)
+            sys_clear = "clear"
+
+    debug(colored(f"{actions}", 'white', 'on_red'))
+    debug(colored(f"{attributes}", 'white', 'on_red'))
+
+    init(args.name, map_encodings)
+    main_loop(args)
